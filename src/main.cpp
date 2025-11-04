@@ -22,7 +22,9 @@ const int PWM_FREQ = 20000; // 20 kHz
 const int PWM_RES = 8;      // 8-bit, 0-255 duty cycle
 
 // 馬達控制變數
-const int MAX_DUTY = 200; // 最大 PWM Duty Cycle (0~255)
+const int MAX_DUTY = 255; // 最大 PWM Duty Cycle (0~255)
+// >>> 修正: 新增最小啟動佔空比以克服靜摩擦 <<<
+const int MIN_DUTY = 0;  // 最小啟動佔空比 (建議從 30~50 之間測試)
 // targetA/B 現在將儲存縮放後的 Duty Cycle 值 (0~MAX_DUTY)
 volatile int targetA = 0; 
 volatile int targetB = 0;
@@ -97,7 +99,7 @@ void connectToWiFi() {
     
     if (millis() - connectStart > CONNECT_TIMEOUT_MS) {
       sendLogMessage("WiFi connection timed out.");
-      jumpToFactory(); // 超時，回退到 Launcher App
+      //jumpToFactory(); // 超時，回退到 Launcher App
       return; 
     }
     
@@ -173,7 +175,6 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
                 
                 // --- [修復 MAX_DUTY 問題] ---
                 // 將搖桿輸入 (-100~100) 縮放至 Duty Cycle 範圍 (-MAX_DUTY~MAX_DUTY)
-                // 例如：搖桿 100 應對應 MAX_DUTY 200
                 int scaledThrottle = (throttle * MAX_DUTY) / 100;
                 int scaledSteer = (steer * MAX_DUTY) / 100;
 
@@ -184,17 +185,41 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
                 // 立即應用速度
                 digitalWrite(motor_stby, HIGH);
                 
-                // 將 Duty Cycle 寫入 PWM 通道
                 int speedA = targetA;
                 int speedB = targetB;
+                
+                // --- Motor A (Throttle) 控制 ---
+                if (speedA > 0) { 
+                    ledcWrite(CH_A_FWD, speedA); ledcWrite(CH_A_REV, 0); 
+                } 
+                else if (speedA < 0) { 
+                    ledcWrite(CH_A_FWD, 0); ledcWrite(CH_A_REV, abs(speedA)); 
+                } 
+                else { 
+                    ledcWrite(CH_A_FWD, 0); ledcWrite(CH_A_REV, 0); 
+                }
 
-                if (speedA > 0) { ledcWrite(CH_A_FWD, speedA); ledcWrite(CH_A_REV, 0); } 
-                else if (speedA < 0) { ledcWrite(CH_A_FWD, 0); ledcWrite(CH_A_REV, abs(speedA)); } 
-                else { ledcWrite(CH_A_FWD, 0); ledcWrite(CH_A_REV, 0); }
-
-                if (speedB > 0) { ledcWrite(CH_B_RIGHT, speedB); ledcWrite(CH_B_LEFT, 0); } 
-                else if (speedB < 0) { ledcWrite(CH_B_RIGHT, 0); ledcWrite(CH_B_LEFT, abs(speedB)); } 
-                else { ledcWrite(CH_B_RIGHT, 0); ledcWrite(CH_B_LEFT, 0); }
+                // --- Motor B (Steer) 控制 (已修正：加入最小啟動佔空比) ---
+                if (speedB > 0) { // 右轉
+                    int duty = speedB;
+                    // 如果速度大於 0 且小於 MIN_DUTY，則強制設定為 MIN_DUTY
+                    if (duty > 0 && duty < MIN_DUTY) duty = MIN_DUTY; 
+                    
+                    ledcWrite(CH_B_RIGHT, duty); 
+                    ledcWrite(CH_B_LEFT, 0); 
+                } 
+                else if (speedB < 0) { // 左轉
+                    int duty = abs(speedB);
+                    // 如果速度小於 0 且絕對值小於 MIN_DUTY，則強制設定為 MIN_DUTY
+                    if (duty > 0 && duty < MIN_DUTY) duty = MIN_DUTY; 
+                    
+                    ledcWrite(CH_B_RIGHT, 0); 
+                    ledcWrite(CH_B_LEFT, duty); 
+                } 
+                else { 
+                    ledcWrite(CH_B_RIGHT, 0); 
+                    ledcWrite(CH_B_LEFT, 0); 
+                }
                 // -----------------------------
 
                 // Reset timeout on every joystick command
@@ -534,6 +559,7 @@ const char index_html[] = R"rawliteral(
 
 // 設置 HTTP Server 和 WebSocket
 void setupWebServer() {
+/*  
   String hostname = "esp32c3-" + String(WiFi.macAddress());
   hostname.replace(":", ""); // remove colons for clean name
   
@@ -542,7 +568,7 @@ void setupWebServer() {
   } else {
     sendLogMessage("Error setting up mDNS!");
   }
-
+*/
   // Handle favicon.ico request (防止 404 錯誤)
   server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(204); 
@@ -567,6 +593,7 @@ void setupWebServer() {
 void setupOTA() {
   String hostname = "esp32c3-" + String(WiFi.macAddress());
   hostname.replace(":", ""); // remove colons for clean name
+  hostname.toLowerCase();
 
   // 設定 OTA 參數
   ArduinoOTA.setHostname(hostname.c_str());
@@ -602,10 +629,16 @@ void setupPWM() {
 // ----------------------------------------------------------------------
 // 程式進入點
 // ----------------------------------------------------------------------
-
+//#include "soc/soc.h"
+//#include "soc/rtc_cntl_reg.h"
 void setup() {
+  //WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // 關閉 brownout 檢測
+
   Serial.begin(115200);
   delay(100);
+
+  //esp_reset_reason_t reason = esp_reset_reason();
+  //Serial.printf("Reset reason: %d\n", reason);
 
   // X. 馬達開關 (Motor Enable)
   pinMode(motor_stby, OUTPUT);
@@ -624,8 +657,8 @@ void setup() {
   setupWebServer();
   
   sendLogMessage("User App setup complete. Ready to receive commands.");
-}
 
+}
 
 void loop() {
   // 保持 OTA 服務運行
@@ -652,4 +685,15 @@ void loop() {
     sendLogMessage("Heartbeat: Car system active, Mode=" + String(currentMode == AUTO ? "AUTO" : "MANUAL"));
     lastLogMillis = millis();
   }
+}
+
+// 在 Arduino core 裡 (esp32-hal-main.c)
+extern "C" void app_main()
+{
+    initArduino();   // 初始化硬體/系統
+    setup();         // 呼叫使用者定義的 setup()
+    for (;;) {
+        loop();      // 不斷呼叫使用者的 loop()
+        delay(1);
+    }
 }

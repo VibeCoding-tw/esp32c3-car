@@ -22,7 +22,7 @@ const int PWM_FREQ = 20000; // 20 kHz
 const int PWM_RES = 8;      // 8-bit, 0-255 duty cycle
 
 // 馬達控制變數
-const int MAX_DUTY = 200; // 最大 PWM Duty Cycle (0~255)
+const int MAX_DUTY = 255; // 最大 PWM Duty Cycle (0~255)
 // targetA/B 現在將儲存縮放後的 Duty Cycle 值 (0~MAX_DUTY)
 volatile int targetA = 0; 
 volatile int targetB = 0;
